@@ -11,7 +11,8 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "test:e2e": "node --test test/todos.e2e.cjs"
+    "test:e2e": "node --test test/todos.e2e.cjs",
+    "test:k8s-images": "node --test test/minikube-images.test.cjs"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.0",

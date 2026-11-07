@@ -28,6 +28,7 @@ spec:
       containers:
         - name: postgres
           image: postgres:17-bookworm
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5432
           env:

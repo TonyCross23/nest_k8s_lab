@@ -2,13 +2,15 @@
 
 A small Todo REST API built with NestJS, Zod, PostgreSQL, and Prisma. Run it locally, with Docker Compose, or on a local Kubernetes cluster using Minikube.
 
+Start with [Docker Compose](#docker-compose-quick-start) for a quick run, follow the [Kubernetes walkthrough](#kubernetes-beginner-walkthrough) to learn Minikube, or jump to the [curl examples](#crud-endpoints).
+
 ## Requirements
 
 | Workflow | Tools |
 | --- | --- |
 | Docker Compose | Docker Engine and Docker Compose |
 | Local development | Node.js 24.15+ and npm, plus PostgreSQL or Docker |
-| Kubernetes | Docker Engine, Minikube, and kubectl |
+| Kubernetes | Docker Engine, Minikube, kubectl, Bash, and Python 3 |
 | Integration tests | Node.js and a running API with a test database |
 
 The database credentials in this repository are local learning examples. Change credentials and add authentication before exposing the API publicly.
@@ -99,12 +101,20 @@ The API uses `postgres-service` as its database hostname. `localhost` inside the
 
 The manifests do not hardcode a namespace. The commands below explicitly select the `nest-crud` context and namespace so the Secret, Services, PVC, and Deployments stay together. Compose and Kubernetes use separate databases.
 
-### 2. Check your tools
+### 2. Check your folder and tools
+
+Use a terminal on the machine where your Minikube cluster runs. Commands you run on another machine or Docker daemon do not prepare this cluster's images.
+
+Start in the repository root, where the Dockerfile is located. If your prompt ends in `/nest_k8s_lab/k8s`, run `cd ..` first. After pulling these changes from GitHub, check:
 
 ```bash
+pwd
+ls Dockerfile scripts/minikube-images.sh k8s/
 docker version
 minikube version
 kubectl version --client
+bash --version
+python3 --version
 ```
 
 Expected: version information from all three tools. `docker version` should include both Client and Server information. Resolve Docker connection or permission errors before continuing.
@@ -138,30 +148,99 @@ Minikube normally enables `storage-provisioner` and `default-storageclass`. Chec
 minikube -p nest-crud addons list
 ```
 
-### 4. Build and load the container images
+### 4. Prepare and verify all three images
 
-Run these commands from the directory containing the Dockerfile:
+There are two separate image stores:
+
+| Location | Contains | How to inspect it |
+| --- | --- | --- |
+| Host Docker | Images built or pulled by your terminal's Docker daemon | `docker image ls` |
+| Minikube containerd | Images that Kubernetes can actually start | `minikube -p nest-crud ssh -- "sudo crictl images"` |
+
+An image being present in host Docker does not prove it is present in Minikube. Likewise, `minikube image load --daemon` can report that a host image is missing even when an older copy is already present in the cluster.
+
+Use the image-preparation helper from the repository root:
 
 ```bash
-docker build --target runtime -t nest-api:latest .
-docker build --target migrate -t nest-migrate:latest .
+bash scripts/minikube-images.sh
+```
+
+The helper performs these steps, in order:
+
+1. Checks that host Docker is available and the `nest-crud` profile is running.
+2. Reuses existing host images. If an application image is missing, builds it from the correct Dockerfile target. If PostgreSQL is missing, pulls it on the host. Failed builds and pulls are retried up to three times.
+3. Exports each host image into a temporary `.tar` archive with `docker image save`.
+4. Imports each archive into Minikube. This transfer does not ask the node to contact Docker Hub.
+5. Checks that each image exists inside the node and matches the archive's content. A missing image or an older image with the same tag causes the script to stop with an error.
+6. Removes the temporary archives, including when a step fails.
+
+The default reuses local images. After changing application code or migrations, use `--rebuild`; see step 10. The helper works even when called from another directory with the correct script path, for example `bash ../scripts/minikube-images.sh` from `k8s/`.
+
+A successful run ends with:
+
+```text
+Verified nest-api:latest (sha256:...).
+Verified nest-migrate:latest (sha256:...).
+Verified postgres:17-bookworm (sha256:...).
+
+All three images verified in Minikube profile nest-crud. Continue with the README namespace and dry-run steps.
+```
+
+**Do not continue to deployment if the helper reports an error.** A command returning silently is not proof that an image reached the node. Check the actual runtime if you need to inspect the result:
+
+```bash
+minikube -p nest-crud ssh -- "sudo crictl images"
+```
+
+`crictl` inspects the container runtime used by Kubernetes. This command runs it inside Minikube; you do not need to install it on your host.
+
+Look for these names and tags; exact IDs and sizes vary:
+
+```text
+IMAGE                            TAG
+.../nest-api                     latest
+.../nest-migrate                 latest
+.../postgres                     17-bookworm
+```
+
+The API and migration use `imagePullPolicy: Never`. PostgreSQL and its wait container use `IfNotPresent`, so the imported PostgreSQL image is used without a registry pull while it remains cached on the node.
+
+For a different profile, select it explicitly:
+
+```bash
+bash scripts/minikube-images.sh --profile YOUR_PROFILE
+```
+
+Use that same profile's kubectl context in the later commands. This guide otherwise assumes a single-node, containerd-based profile named `nest-crud`.
+
+#### If you see a TLS handshake timeout
+
+For example:
+
+```text
+failed to fetch anonymous token ... auth.docker.io ... TLS handshake timeout
+```
+
+This means the component doing the pull could not finish its TLS connection to Docker Hub's authentication service. A host Docker pull and a pull inside the Minikube node use different network paths. The archive workflow avoids the node-side registry request, including when `minikube image pull` did not produce a useful result.
+
+The host still needs registry access for the first PostgreSQL pull and uncached application builds. If the helper stops at that stage, try the failed host operation by itself:
+
+```bash
 docker pull postgres:17-bookworm
 ```
 
-The `runtime` target contains the API. The `migrate` target contains Prisma CLI, configuration, and migration files. PostgreSQL is used for both the database and its readiness-check init container.
+Once that succeeds, rerun the helper. Keep the same Docker context and environment for both commands; `docker context show` identifies the selected context, and `DOCKER_HOST` or `DOCKER_CONTEXT` can override its connection settings. If host pulls keep timing out, resolve the network/VPN/proxy connection to Docker Hub first. Docker daemon proxy configuration is described in the [official Docker guide](https://docs.docker.com/engine/daemon/proxy/).
 
-Your host's Docker images are not automatically available inside Minikube. Load all three:
+If only PostgreSQL needs transferring and you want to perform that transfer manually, use a local archive:
 
 ```bash
-minikube -p nest-crud image load nest-api:latest --daemon --overwrite=true
-minikube -p nest-crud image load nest-migrate:latest --daemon --overwrite=true
-minikube -p nest-crud image load postgres:17-bookworm --daemon --overwrite=true
-minikube -p nest-crud image ls
+docker image inspect postgres:17-bookworm
+docker image save --output /tmp/nest-crud-postgres.tar postgres:17-bookworm
+minikube -p nest-crud image load /tmp/nest-crud-postgres.tar --overwrite=true
+minikube -p nest-crud ssh -- "sudo crictl inspecti --output table docker.io/library/postgres:17-bookworm"
 ```
 
-Expected: the image list contains `nest-api:latest`, `nest-migrate:latest`, and `postgres:17-bookworm` (registry prefixes may be included).
-
-The API and migration containers use `imagePullPolicy: Never`, so Kubernetes requires those images to be loaded locally. `--overwrite=true` lets you replace an image after rebuilding with the same tag.
+Only run the save command after the host inspect succeeds. Only continue after the node inspect displays the PostgreSQL image. The helper additionally checks that the imported content matches the host archive. You can remove `/tmp/nest-crud-postgres.tar` after a successful import.
 
 ### 5. Create a namespace and perform a dry-run
 
@@ -292,21 +371,21 @@ Fetch the Todo again after the database and API are ready. It should still exist
 
 ### 10. Rebuild after changing code or migrations
 
-Rebuild and reload both application images:
+Rebuild both application images, import all required images using archives, and verify them:
 
 ```bash
-docker build --target runtime -t nest-api:latest .
-docker build --target migrate -t nest-migrate:latest .
+bash scripts/minikube-images.sh --rebuild
+```
 
-minikube -p nest-crud image load nest-api:latest --daemon --overwrite=true
-minikube -p nest-crud image load nest-migrate:latest --daemon --overwrite=true
+Continue only after `All three images verified` appears. Then update the Deployment and replace the API Pod:
 
+```bash
 kubectl --context=nest-crud -n nest-crud apply -f k8s/api-deployment.yaml
 kubectl --context=nest-crud -n nest-crud rollout restart deployment/nest-api
 kubectl --context=nest-crud -n nest-crud rollout status deployment/nest-api --timeout=600s
 ```
 
-Applying unchanged YAML does not restart Pods just because an image with the same tag changed. `rollout restart` creates new Pods, which run the init containers and use the reloaded images. Prisma applies pending migrations and skips already-applied migrations.
+Applying unchanged YAML does not restart Pods just because an image with the same tag changed. `rollout restart` creates new Pods, which run the init containers and use the imported images. Prisma applies pending migrations and skips already-applied migrations. Existing PostgreSQL data remains on its PVC.
 
 ### 11. Troubleshoot a failed deployment
 
@@ -323,8 +402,12 @@ To inspect one failing Pod, copy its name from `get pods` and run `kubectl --con
 
 | Symptom | What to check |
 | --- | --- |
-| `ErrImageNeverPull` | Build and load the exact `nest-api:latest` or `nest-migrate:latest` image into the same Minikube profile. |
-| `ImagePullBackOff` | Inspect Pod events for PostgreSQL download errors; preload `postgres:17-bookworm` if necessary. |
+| `ErrImageNeverPull` | Run `bash scripts/minikube-images.sh` against the same profile and require all three verification messages before restarting the API. |
+| `ImagePullBackOff` | Inspect Pod events. For PostgreSQL registry errors, use the host-to-archive helper, then wait for Kubernetes to retry. |
+| `The image ... was not found; unable to add it to cache` | Inspect the image in host Docker. Use the helper's archive transfer instead of `image load --daemon`. |
+| `minikube image pull` is silent but PostgreSQL is absent | Inspect the actual runtime with `crictl images` inside the node; use the archive helper and require verification. |
+| `auth.docker.io ... TLS handshake timeout` | Identify whether the failure is on the host or node. Use the archive workflow for node-side failures; fix host registry connectivity if the host pull also fails. |
+| Helper reports a different image ID after import | Stop deployment. Check import errors, node disk space, and image architecture; rerun the helper. An older tag is not accepted as success. |
 | `Pending` PVC | Check the default StorageClass and Minikube storage addons. If disabled, enable `storage-provisioner` and `default-storageclass` with `minikube -p nest-crud addons enable ADDON_NAME`. |
 | `CreateContainerConfigError` | Check that `app-secret` and its required keys exist in the same namespace. |
 | `Init:0/2` | Read `wait-for-postgres` logs; check the database Pod and `postgres-service`. |
@@ -450,6 +533,16 @@ Example validation response:
 
 ## Build and verify
 
+Test the image helper's success and failure handling without a cluster:
+
+```bash
+npm run test:k8s-images
+```
+
+These regression tests use command doubles and small real tar archives to check retries, missing/stale node images, silent import failures, explicit import failures, cleanup, and rebuilding. They do not verify a real Kubernetes rollout or network connection. The live checks in Kubernetes steps 5–9 are still required on your own running cluster.
+
+Build the application and run the API integration test:
+
 ```bash
 npm run build
 
@@ -474,7 +567,11 @@ k8s/
   secret.yaml             # Local database credentials
   postgres.yaml           # PVC, PostgreSQL Deployment, and Service
   api-deployment.yaml     # API Deployment, init containers, and Service
-test/todos.e2e.cjs
+scripts/
+  minikube-images.sh      # Host build/pull -> archive import -> node verification
+test/
+  todos.e2e.cjs
+  minikube-images.test.cjs
 Dockerfile
 compose.yaml
 ```

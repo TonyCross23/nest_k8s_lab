@@ -15,6 +15,7 @@ spec:
       initContainers:
         - name: wait-for-postgres
           image: postgres:17-bookworm
+          imagePullPolicy: IfNotPresent
           command:
             - sh
             - -ec
