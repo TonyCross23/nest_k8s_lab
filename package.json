@@ -1,0 +1,35 @@
+{
+  "name": "nest-k8s-lab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simple NestJS Todo CRUD with Zod, PostgreSQL, Prisma and Docker",
+  "scripts": {
+    "build": "prisma generate && nest build",
+    "start": "node dist/main.js",
+    "start:dev": "nest start --watch",
+    "prisma:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio",
+    "test:e2e": "node --test test/todos.e2e.cjs"
+  },
+  "dependencies": {
+    "@nestjs/common": "^12.0.0",
+    "@nestjs/core": "^12.0.0",
+    "@nestjs/platform-express": "^12.0.0",
+    "@prisma/adapter-pg": "^7.0.0",
+    "@prisma/client": "^7.0.0",
+    "dotenv": "^17.0.0",
+    "pg": "^8.16.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^12.0.0",
+    "@types/node": "^24.0.0",
+    "prisma": "^7.0.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": { "node": "^22.22.3 || ^24.15.0 || >=26.0.0" }
+}

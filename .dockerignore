@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.agents
+.aws
+.codex
+.env
+src/generated
+coverage
+*.log
