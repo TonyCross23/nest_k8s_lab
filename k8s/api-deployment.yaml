@@ -13,6 +13,33 @@ spec:
         app: nest-api
     spec:
       initContainers:
+        - name: wait-for-postgres
+          image: postgres:17-bookworm
+          command:
+            - sh
+            - -ec
+            - |
+              attempt=0
+              until pg_isready -h postgres-service -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB"; do
+                attempt=$((attempt + 1))
+                if [ "$attempt" -ge 60 ]; then
+                  echo "PostgreSQL was not ready after 60 attempts" >&2
+                  exit 1
+                fi
+                echo "Waiting for PostgreSQL ($attempt/60)..."
+                sleep 2
+              done
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: POSTGRES_DB
         - name: wait-and-migrate
           image: nest-migrate:latest
           imagePullPolicy: Never
